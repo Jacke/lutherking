@@ -1,0 +1,4 @@
+feat: add .gitignore file
+
+- Exclude .env file to prevent sensitive data from being committed
+- Ignore .aider* files to keep AI assistant metadata out of version control
