@@ -1,0 +1,17 @@
+version: '3.8'
+services:
+  app:
+    build: .
+    ports:
+      - '3000:3000'
+    volumes:
+      - ./storage/sessions:/app/storage/sessions
+    environment:
+      - NODE_ENV=production
+      - DATABASE_URL=sqlite:///app/storage/orator.sqlite
+      - NEXTAUTH_URL=${NEXTAUTH_URL}
+      - NEXTAUTH_SECRET=${NEXTAUTH_SECRET}
+      - STRIPE_SECRET_KEY=${STRIPE_SECRET_KEY}
+      - PADDLE_API_KEY=${PADDLE_API_KEY}
+      - ELEVENLABS_API_KEY=${ELEVENLABS_API_KEY}
+    depends_on: [] 
