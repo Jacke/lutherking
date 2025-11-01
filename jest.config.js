@@ -8,4 +8,26 @@ module.exports = {
   transform: {
     ...tsJestTransformCfg,
   },
+  moduleNameMapper: {
+    '^@/(.*)$': '<rootDir>/$1',
+  },
+  testMatch: [
+    '**/__tests__/**/*.test.ts',
+    '**/__tests__/**/*.spec.ts',
+  ],
+  collectCoverageFrom: [
+    'pages/api/**/*.ts',
+    'app/**/*.tsx',
+    'components/**/*.tsx',
+    '!**/*.d.ts',
+    '!**/node_modules/**',
+  ],
+  coverageThreshold: {
+    global: {
+      branches: 50,
+      functions: 50,
+      lines: 50,
+      statements: 50,
+    },
+  },
 };
