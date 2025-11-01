@@ -30,4 +30,8 @@ module.exports = {
       statements: 50,
     },
   },
+  // Transform ESM modules from node_modules
+  transformIgnorePatterns: [
+    'node_modules/(?!(@auth|drizzle-orm)/)',
+  ],
 };
