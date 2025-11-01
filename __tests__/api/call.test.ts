@@ -7,9 +7,22 @@
 import { describe, it, expect, jest, beforeEach } from '@jest/globals';
 import { createMocks } from 'node-mocks-http';
 
-// Mock NextAuth
+// Mock auth options to avoid ES modules import issues
+jest.mock('../../lib/auth/options', () => ({
+  authOptions: {},
+}));
+
+// Mock NextAuth (both constructor and getServerSession)
 jest.mock('next-auth', () => ({
+  __esModule: true,
+  default: jest.fn(() => jest.fn()),
   getServerSession: jest.fn(),
+}));
+
+// Mock the [...nextauth] route handler
+jest.mock('../../pages/api/auth/[...nextauth]', () => ({
+  __esModule: true,
+  default: jest.fn(),
 }));
 
 // Mock database
@@ -294,7 +307,7 @@ describe('Call API', () => {
 
       expect(res._getStatusCode()).toBe(400);
       const data = JSON.parse(res._getData());
-      expect(data.error).toContain('audio');
+      expect(data.error.toLowerCase()).toContain('audio');
     });
   });
 });

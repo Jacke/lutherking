@@ -7,6 +7,26 @@ import { describe, it, expect, jest, beforeEach } from '@jest/globals';
 import { createMocks } from 'node-mocks-http';
 import fs from 'fs';
 
+// Create mocks that can be overridden in tests
+const mockTranscriptionCreate = jest.fn().mockResolvedValue({
+  text: 'Тестовая транскрипция речи с некоторыми словами-паразитами типа эм и ну.',
+});
+
+const mockChatCreate = jest.fn().mockResolvedValue({
+  choices: [{
+    message: {
+      content: JSON.stringify({
+        clarity_score: 75,
+        filler_words: 'эм (2 раза), ну (1 раз)',
+        tone: 'confident',
+        confidence: 80,
+        highlights: ['Хорошая структура', 'Четкое произношение', 'Слишком много пауз'],
+        text: 'Ваша речь демонстрирует хорошую структуру и уверенность.',
+      }),
+    },
+  }],
+});
+
 // Mock OpenAI
 jest.mock('openai', () => {
   return {
@@ -14,27 +34,12 @@ jest.mock('openai', () => {
     default: jest.fn().mockImplementation(() => ({
       audio: {
         transcriptions: {
-          create: jest.fn().mockResolvedValue({
-            text: 'Тестовая транскрипция речи с некоторыми словами-паразитами типа эм и ну.',
-          }),
+          create: mockTranscriptionCreate,
         },
       },
       chat: {
         completions: {
-          create: jest.fn().mockResolvedValue({
-            choices: [{
-              message: {
-                content: JSON.stringify({
-                  clarity_score: 75,
-                  filler_words: 'эм (2 раза), ну (1 раз)',
-                  tone: 'confident',
-                  confidence: 80,
-                  highlights: ['Хорошая структура', 'Четкое произношение', 'Слишком много пауз'],
-                  text: 'Ваша речь демонстрирует хорошую структуру и уверенность.',
-                }),
-              },
-            }],
-          }),
+          create: mockChatCreate,
         },
       },
     })),
@@ -65,6 +70,26 @@ const mockFs = fs as jest.Mocked<typeof fs>;
 describe('Eval API', () => {
   beforeEach(() => {
     jest.clearAllMocks();
+
+    // Reset OpenAI mocks to default success behavior
+    mockTranscriptionCreate.mockResolvedValue({
+      text: 'Тестовая транскрипция речи с некоторыми словами-паразитами типа эм и ну.',
+    });
+
+    mockChatCreate.mockResolvedValue({
+      choices: [{
+        message: {
+          content: JSON.stringify({
+            clarity_score: 75,
+            filler_words: 'эм (2 раза), ну (1 раз)',
+            tone: 'confident',
+            confidence: 80,
+            highlights: ['Хорошая структура', 'Четкое произношение', 'Слишком много пауз'],
+            text: 'Ваша речь демонстрирует хорошую структуру и уверенность.',
+          }),
+        },
+      }],
+    });
   });
 
   describe('POST /api/eval', () => {
@@ -241,9 +266,7 @@ describe('Eval API', () => {
       } as any);
 
       // Mock OpenAI to throw error
-      const OpenAI = (await import('openai')).default;
-      const openaiInstance = new OpenAI();
-      (openaiInstance.audio.transcriptions.create as jest.Mock).mockRejectedValueOnce(
+      mockTranscriptionCreate.mockRejectedValueOnce(
         new Error('OpenAI API error')
       );
 

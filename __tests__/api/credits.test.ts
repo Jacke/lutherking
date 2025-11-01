@@ -6,9 +6,22 @@
 import { describe, it, expect, jest, beforeEach } from '@jest/globals';
 import { createMocks } from 'node-mocks-http';
 
-// Mock NextAuth
+// Mock auth options to avoid ES modules import issues
+jest.mock('../../lib/auth/options', () => ({
+  authOptions: {},
+}));
+
+// Mock NextAuth (both constructor and getServerSession)
 jest.mock('next-auth', () => ({
+  __esModule: true,
+  default: jest.fn(() => jest.fn()),
   getServerSession: jest.fn(),
+}));
+
+// Mock the [...nextauth] route handler
+jest.mock('../../pages/api/auth/[...nextauth]', () => ({
+  __esModule: true,
+  default: jest.fn(),
 }));
 
 // Mock database
@@ -102,10 +115,28 @@ describe('Credits API', () => {
     });
 
     it('should reject invalid HTTP method', async () => {
+      mockGetServerSession.mockResolvedValue({
+        user: { email: 'test@example.com' },
+      } as any);
+
+      const mockUser = {
+        id: 1,
+        email: 'test@example.com',
+        credits: 10,
+      };
+
+      mockDb.select.mockReturnValue({
+        from: jest.fn().mockReturnValue({
+          where: jest.fn().mockReturnValue({
+            get: jest.fn().mockResolvedValue(mockUser),
+          }),
+        }),
+      });
+
       const creditsHandler = (await import('../../pages/api/credits')).default;
 
       const { req, res } = createMocks({
-        method: 'POST',
+        method: 'DELETE', // Invalid method
       });
 
       await creditsHandler(req, res);
