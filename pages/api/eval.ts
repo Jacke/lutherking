@@ -4,8 +4,11 @@ import OpenAI from 'openai';
 import { db } from '../../drizzle/db';
 import { sessions, callHistory } from '../../drizzle/schema';
 import { eq } from 'drizzle-orm';
+import { TranscriptionServiceFactory } from '@/lib/transcription';
+import type { TranscriptionModel } from '@/lib/transcription';
+import { getPCMPath, cleanupPCMFile } from '@/lib/audio/converter';
 
-// Initialize OpenAI client
+// Initialize OpenAI client for analysis
 const openai = new OpenAI({
   apiKey: process.env.OPENAI_API_KEY,
 });
@@ -33,7 +36,10 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
   }
 
   try {
+    console.log(`[EVAL] Starting evaluation for session: ${sessionId}`);
+    
     // Get session from database
+    console.log(`[EVAL] Step 1: Fetching session from database...`);
     const session = await db
       .select()
       .from(sessions)
@@ -41,27 +47,73 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
       .get();
 
     if (!session) {
+      console.error(`[EVAL] ERROR: Session not found: ${sessionId}`);
       return res.status(404).json({ error: 'Session not found' });
     }
+    console.log(`[EVAL] Session found: userId=${session.userId}, wavPath=${session.wavPath}`);
 
     // Use wavPath from request or session
     const audioPath = wavPath || session.wavPath;
 
-    if (!audioPath || !fs.existsSync(audioPath)) {
-      return res.status(400).json({ error: 'Audio file not found' });
+    if (!audioPath) {
+      console.error(`[EVAL] ERROR: No audio path provided`);
+      return res.status(400).json({ error: 'Audio file path not found' });
     }
 
-    console.log(`Starting evaluation for session ${sessionId}`);
-    console.log(`Audio file: ${audioPath}`);
+    if (!fs.existsSync(audioPath)) {
+      console.error(`[EVAL] ERROR: Audio file does not exist: ${audioPath}`);
+      return res.status(400).json({ error: `Audio file not found at path: ${audioPath}` });
+    }
 
-    // Step 1: Transcribe audio with Whisper
-    const transcriptionResult = await transcribeAudio(audioPath);
+    const fileStats = fs.statSync(audioPath);
+    console.log(`[EVAL] Audio file found: ${audioPath} (${fileStats.size} bytes)`);
+
+    // Get transcription model from session or use default
+    const transcriptionModel = (session.transcriptionModel || 'whisper') as TranscriptionModel;
+    console.log(`[EVAL] Using transcription model: ${transcriptionModel}`);
+
+    // Check API keys
+    if (transcriptionModel === 'whisper' && !process.env.OPENAI_API_KEY) {
+      console.error(`[EVAL] ERROR: OPENAI_API_KEY not set`);
+      return res.status(500).json({ error: 'OpenAI API key not configured' });
+    }
+    if (transcriptionModel === 'scribe' && !process.env.ELEVENLABS_API_KEY) {
+      console.error(`[EVAL] ERROR: ELEVENLABS_API_KEY not set`);
+      return res.status(500).json({ error: 'ElevenLabs API key not configured' });
+    }
+
+    // Step 1: Transcribe audio using selected model
+    console.log(`[EVAL] Step 2: Starting transcription with ${transcriptionModel}...`);
+    let transcriptionResult;
+    try {
+      const transcriptionService = TranscriptionServiceFactory.create(transcriptionModel);
+      transcriptionResult = await transcriptionService.transcribe(audioPath);
+      console.log(`[EVAL] Transcription completed. Text length: ${transcriptionResult.text?.length || 0} chars`);
+      if (transcriptionResult.text) {
+        console.log(`[EVAL] Transcript preview: ${transcriptionResult.text.substring(0, 100)}...`);
+      } else {
+        console.warn(`[EVAL] WARNING: Transcription returned empty text`);
+      }
+    } catch (transcriptionError) {
+      console.error(`[EVAL] ERROR in transcription:`, transcriptionError);
+      throw new Error(`Transcription failed: ${transcriptionError instanceof Error ? transcriptionError.message : 'Unknown error'}`);
+    }
 
     // Step 2: Analyze transcript with GPT-4
-    const analysisResult = await analyzeTranscript(transcriptionResult.text);
+    console.log(`[EVAL] Step 3: Analyzing transcript with GPT-4...`);
+    let analysisResult;
+    try {
+      analysisResult = await analyzeTranscript(transcriptionResult.text);
+      console.log(`[EVAL] Analysis completed. Clarity: ${analysisResult.clarity_score}, Confidence: ${analysisResult.confidence}`);
+    } catch (analysisError) {
+      console.error(`[EVAL] ERROR in analysis:`, analysisError);
+      throw new Error(`Analysis failed: ${analysisError instanceof Error ? analysisError.message : 'Unknown error'}`);
+    }
 
     // Step 3: Calculate duration
-    const duration = await getAudioDuration(audioPath);
+    console.log(`[EVAL] Step 4: Calculating duration...`);
+    const duration = transcriptionResult.duration || await getAudioDuration(audioPath);
+    console.log(`[EVAL] Duration: ${duration} seconds`);
 
     // Combine results
     const evalResult: EvalResult = {
@@ -71,53 +123,67 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
     };
 
     // Step 4: Save to callHistory
-    await db.insert(callHistory).values({
-      userId: session.userId,
-      sessionId: session.sessionId,
-      challengeId: 1, // TODO: get from session
-      startedAt: session.startedAt,
-      endedAt: Date.now(),
-      clarityScore: evalResult.clarity_score,
-      fillerWords: evalResult.filler_words,
-      tone: evalResult.tone,
-      confidence: evalResult.confidence,
-      highlights: JSON.stringify(evalResult.highlights),
-      feedback: evalResult.text,
-    }).run();
+    console.log(`[EVAL] Step 5: Saving to database...`);
+    try {
+      await db.insert(callHistory).values({
+        userId: session.userId,
+        sessionId: session.sessionId,
+        challengeId: 1, // TODO: get from session
+        startedAt: new Date(session.startedAt),
+        endedAt: new Date(),
+        clarityScore: evalResult.clarity_score,
+        fillerWords: evalResult.filler_words,
+        tone: evalResult.tone,
+        confidence: evalResult.confidence,
+        highlights: JSON.stringify(evalResult.highlights),
+        feedback: evalResult.text,
+        transcript: evalResult.transcript,
+        transcriptionModel,
+      }).run();
+      console.log(`[EVAL] Successfully saved to callHistory`);
+    } catch (dbError) {
+      console.error(`[EVAL] ERROR saving to database:`, dbError);
+      throw new Error(`Database save failed: ${dbError instanceof Error ? dbError.message : 'Unknown error'}`);
+    }
 
-    console.log(`Evaluation completed for session ${sessionId}`);
+    console.log(`[EVAL] Evaluation completed successfully for session ${sessionId}`);
+
+    // Cleanup temporary PCM file if it was created during transcription
+    // This happens when Scribe model converts WebM -> PCM
+    if (transcriptionModel === 'scribe' && audioPath) {
+      const pcmPath = getPCMPath(audioPath);
+      if (pcmPath !== audioPath) {
+        // Only cleanup if the PCM path is different (meaning conversion happened)
+        console.log(`[EVAL] Step 6: Cleaning up temporary PCM file...`);
+        cleanupPCMFile(pcmPath);
+      }
+    }
 
     return res.status(200).json(evalResult);
   } catch (error) {
-    console.error('Eval error:', error);
+    console.error(`[EVAL] FATAL ERROR for session ${sessionId}:`, error);
+    console.error(`[EVAL] Error stack:`, error instanceof Error ? error.stack : 'No stack trace');
+
+    // Cleanup temporary PCM file even on error
+    try {
+      const { wavPath } = req.body;
+      const audioPath = wavPath || req.body.audioPath;
+      if (audioPath) {
+        const pcmPath = getPCMPath(audioPath);
+        if (pcmPath !== audioPath && fs.existsSync(pcmPath)) {
+          console.log(`[EVAL] Cleaning up temporary PCM file after error...`);
+          cleanupPCMFile(pcmPath);
+        }
+      }
+    } catch (cleanupError) {
+      // Ignore cleanup errors
+      console.error(`[EVAL] Non-fatal cleanup error:`, cleanupError);
+    }
+
     return res.status(500).json({
       error: 'Failed to evaluate audio',
       details: error instanceof Error ? error.message : 'Unknown error',
     });
-  }
-}
-
-/**
- * Transcribe audio using OpenAI Whisper API
- */
-async function transcribeAudio(audioPath: string): Promise<{ text: string }> {
-  try {
-    const audioFile = fs.createReadStream(audioPath);
-
-    const transcription = await openai.audio.transcriptions.create({
-      file: audioFile,
-      model: 'whisper-1',
-      language: 'ru', // Russian, change if needed
-      response_format: 'verbose_json',
-      timestamp_granularities: ['word'],
-    });
-
-    return {
-      text: transcription.text || '',
-    };
-  } catch (error) {
-    console.error('Whisper transcription error:', error);
-    throw new Error('Failed to transcribe audio');
   }
 }
 
@@ -156,6 +222,12 @@ ${transcript}
 }`;
 
   try {
+    console.log(`[GPT-4] Sending transcript for analysis (length: ${transcript.length} chars)`);
+    
+    if (!process.env.OPENAI_API_KEY) {
+      throw new Error('OPENAI_API_KEY not configured');
+    }
+
     const completion = await openai.chat.completions.create({
       model: 'gpt-4-turbo-preview',
       messages: [
@@ -172,31 +244,49 @@ ${transcript}
       response_format: { type: 'json_object' },
     });
 
+    console.log(`[GPT-4] Received response from OpenAI`);
+
     const content = completion.choices[0]?.message?.content;
 
     if (!content) {
+      console.error(`[GPT-4] ERROR: No content in response`);
       throw new Error('No response from GPT-4');
     }
 
-    const result = JSON.parse(content);
-
-    // Validate response structure
-    if (
-      typeof result.clarity_score !== 'number' ||
-      typeof result.filler_words !== 'string' ||
-      typeof result.tone !== 'string' ||
-      typeof result.confidence !== 'number' ||
-      !Array.isArray(result.highlights) ||
-      typeof result.text !== 'string'
-    ) {
-      throw new Error('Invalid response structure from GPT-4');
+    console.log(`[GPT-4] Parsing JSON response...`);
+    let result;
+    try {
+      result = JSON.parse(content);
+    } catch (parseError) {
+      console.error(`[GPT-4] ERROR: Failed to parse JSON:`, parseError);
+      console.error(`[GPT-4] Response content:`, content.substring(0, 500));
+      throw new Error(`Failed to parse GPT-4 response: ${parseError instanceof Error ? parseError.message : 'Unknown error'}`);
     }
 
+    // Validate response structure
+    console.log(`[GPT-4] Validating response structure...`);
+    const validationErrors: string[] = [];
+    if (typeof result.clarity_score !== 'number') validationErrors.push('clarity_score is not a number');
+    if (typeof result.filler_words !== 'string') validationErrors.push('filler_words is not a string');
+    if (typeof result.tone !== 'string') validationErrors.push('tone is not a string');
+    if (typeof result.confidence !== 'number') validationErrors.push('confidence is not a number');
+    if (!Array.isArray(result.highlights)) validationErrors.push('highlights is not an array');
+    if (typeof result.text !== 'string') validationErrors.push('text is not a string');
+
+    if (validationErrors.length > 0) {
+      console.error(`[GPT-4] ERROR: Invalid response structure:`, validationErrors);
+      console.error(`[GPT-4] Received result:`, JSON.stringify(result, null, 2));
+      throw new Error(`Invalid response structure from GPT-4: ${validationErrors.join(', ')}`);
+    }
+
+    console.log(`[GPT-4] Analysis completed successfully`);
     return result;
   } catch (error) {
-    console.error('GPT-4 analysis error:', error);
+    console.error(`[GPT-4] ERROR in analysis:`, error);
+    console.error(`[GPT-4] Error details:`, error instanceof Error ? error.stack : 'No stack trace');
 
     // Return default values if analysis fails
+    console.log(`[GPT-4] Returning default values due to error`);
     return {
       clarity_score: 50,
       filler_words: 'Не удалось определить',

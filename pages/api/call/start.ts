@@ -1,6 +1,7 @@
 import type { NextApiRequest, NextApiResponse } from 'next';
-import { getServerSession } from 'next-auth';
-import { authOptions } from '../auth/[...nextauth]';
+// import { getServerSession } from 'next-auth';
+// import { authOptions } from '../../../lib/auth/options';
+import { getMockUser } from '../../../lib/auth/mock';
 import { db } from '../../../drizzle/db';
 import { users, sessions } from '../../../drizzle/schema';
 import { eq } from 'drizzle-orm';
@@ -11,25 +12,34 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
     return res.status(405).json({ error: 'Method not allowed' });
   }
 
-  // Check authentication
-  const session = await getServerSession(req, res, authOptions);
-  if (!session?.user?.email) {
-    return res.status(401).json({ error: 'Unauthorized' });
-  }
+  // MOCK AUTH - TODO: Re-enable real auth when ready
+  // const session = await getServerSession(req, res, authOptions);
+  // if (!session?.user?.email) {
+  //   return res.status(401).json({ error: 'Unauthorized' });
+  // }
 
-  const { challengeId } = req.body;
+  const { challengeId, transcriptionModel } = req.body;
 
   if (!challengeId) {
     return res.status(400).json({ error: 'Missing challengeId' });
   }
 
+  // Validate transcription model if provided
+  const model = transcriptionModel || process.env.TRANSCRIPTION_MODEL || 'whisper';
+  if (!['whisper', 'scribe'].includes(model)) {
+    return res.status(400).json({ error: 'Invalid transcription model' });
+  }
+
   try {
-    // Get user from database
-    const user = await db
-      .select()
-      .from(users)
-      .where(eq(users.email, session.user.email))
-      .get();
+    // MOCK AUTH - Get mock user
+    const user = await getMockUser();
+
+    // Original auth code (commented out):
+    // const user = await db
+    //   .select()
+    //   .from(users)
+    //   .where(eq(users.email, session.user.email))
+    //   .get();
 
     if (!user) {
       return res.status(404).json({ error: 'User not found' });
@@ -53,7 +63,8 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
     await db.insert(sessions).values({
       userId: user.id,
       sessionId,
-      startedAt: Date.now(),
+      startedAt: new Date(),
+      transcriptionModel: model,
     }).run();
 
     console.log(`Call session started: ${sessionId} for user ${user.id}, credits remaining: ${newCredits}`);

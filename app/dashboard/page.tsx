@@ -1,6 +1,6 @@
-import { redirect } from 'next/navigation';
-import { getServerSession } from 'next-auth';
-import { authOptions } from '../../lib/auth/options';
+// import { redirect } from 'next/navigation';
+// import { getServerSession } from 'next-auth';
+// import { authOptions } from '../../lib/auth/options';
 import { LogoutButton } from '../../components/LogoutButton';
 import { CreditsDisplay } from '../../components/CreditsDisplay';
 import { BuyCreditsButton } from '../../components/BuyCreditsButton';
@@ -18,14 +18,12 @@ async function fetchChallenges() {
   return res.json();
 }
 
-const isAuthDisabled = process.env.AUTH_DISABLED === 'true';
-
 export default async function DashboardPage() {
-  let session = null;
-  if (!isAuthDisabled) {
-    session = await getServerSession(authOptions);
-    if (!session) redirect('/login');
-  }
+  // MOCK AUTH - Skip authentication
+  // let session = null;
+  // session = await getServerSession(authOptions);
+  // if (!session) redirect('/login');
+
   const challenges = await fetchChallenges();
 
   return (

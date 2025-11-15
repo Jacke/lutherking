@@ -34,18 +34,21 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
     // Update session end time
     await db
       .update(sessions)
-      .set({ endedAt: Date.now() })
+      .set({ endedAt: new Date() })
       .where(eq(sessions.id, session.id))
       .run();
 
-    console.log(`Session ${sessionId} ended, starting evaluation...`);
+    console.log(`[END] Session ${sessionId} ended, starting evaluation...`);
+    console.log(`[END] Audio file path: ${session.wavPath}`);
 
     // Call /api/eval to analyze the audio
     // Note: We're calling our own API internally
     const baseUrl = process.env.NEXTAUTH_URL || 'http://localhost:3000';
+    const evalUrl = `${baseUrl}/api/eval`;
+    console.log(`[END] Calling eval API: ${evalUrl}`);
 
     try {
-      const evalRes = await fetch(`${baseUrl}/api/eval`, {
+      const evalRes = await fetch(evalUrl, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
@@ -54,21 +57,25 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
         }),
       });
 
+      console.log(`[END] Eval API response status: ${evalRes.status}`);
+
       if (!evalRes.ok) {
-        const errorData = await evalRes.json();
-        console.error('Eval API error:', errorData);
-        throw new Error(errorData.error || 'Failed to evaluate audio');
+        const errorData = await evalRes.json().catch(() => ({ error: 'Failed to parse error response' }));
+        console.error(`[END] Eval API error (${evalRes.status}):`, errorData);
+        throw new Error(errorData.error || `Failed to evaluate audio (status: ${evalRes.status})`);
       }
 
       const feedback = await evalRes.json();
-      console.log(`Evaluation completed for session ${sessionId}`);
+      console.log(`[END] Evaluation completed successfully for session ${sessionId}`);
+      console.log(`[END] Feedback preview: clarity=${feedback.clarity_score}, confidence=${feedback.confidence}`);
 
       return res.status(200).json({
         success: true,
         feedback
       });
     } catch (evalError) {
-      console.error('Error calling eval API:', evalError);
+      console.error(`[END] ERROR calling eval API for session ${sessionId}:`, evalError);
+      console.error(`[END] Error details:`, evalError instanceof Error ? evalError.stack : 'No stack trace');
 
       // Return success even if eval fails - user can see session in history
       return res.status(200).json({

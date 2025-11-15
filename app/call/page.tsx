@@ -1,17 +1,21 @@
 'use client';
 import { useRouter, useSearchParams } from 'next/navigation';
 import { useState, useEffect, useRef } from 'react';
+import RealtimeTranscription from '@/components/RealtimeTranscription';
 
 export default function CallPage() {
   const router = useRouter();
   const searchParams = useSearchParams();
-  const sessionId = searchParams.get('sessionId');
+  const sessionId = searchParams?.get('sessionId');
 
   // State management
   const [isRecording, setIsRecording] = useState(false);
   const [isUploading, setIsUploading] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [recordingTime, setRecordingTime] = useState(0);
+  const [transcriptionModel, setTranscriptionModel] = useState<string>('whisper');
+  const [transcript, setTranscript] = useState<string>('');
+  const [partialTranscript, setPartialTranscript] = useState<string>('');
 
   // Refs for audio recording
   const mediaRecorderRef = useRef<MediaRecorder | null>(null);
@@ -23,9 +27,26 @@ export default function CallPage() {
   const analyserRef = useRef<AnalyserNode | null>(null);
   const timerRef = useRef<NodeJS.Timeout | null>(null);
 
-  // Start recording on mount
+  // Fetch session info and start recording on mount
   useEffect(() => {
     if (!sessionId) return;
+    
+    const fetchSession = async () => {
+      try {
+        // Get session info to check transcription model
+        const res = await fetch(`/api/call/info?sessionId=${sessionId}`);
+        if (res.ok) {
+          const data = await res.json();
+          if (data.transcriptionModel) {
+            setTranscriptionModel(data.transcriptionModel);
+          }
+        }
+      } catch (err) {
+        console.error('Error fetching session info:', err);
+      }
+    };
+
+    fetchSession();
     startRecording();
 
     return () => {
@@ -301,8 +322,44 @@ export default function CallPage() {
         {isUploading ? 'Завершение...' : 'Завершить звонок'}
       </button>
 
+      {/* Real-time transcription display */}
+      {transcriptionModel === 'scribe' && streamRef.current && (
+        <div className="w-full mt-6">
+          <div className="bg-gray-50 rounded-lg p-4 border border-gray-200">
+            <div className="text-sm text-gray-600 mb-2">Транскрипция в реальном времени:</div>
+            <div className="text-base text-gray-900 min-h-[60px]">
+              {transcript && <div className="mb-2">{transcript}</div>}
+              {partialTranscript && (
+                <div className="text-gray-500 italic">{partialTranscript}</div>
+              )}
+              {!transcript && !partialTranscript && (
+                <div className="text-gray-400">Говорите, текст появится здесь...</div>
+              )}
+            </div>
+          </div>
+          <RealtimeTranscription
+            sessionId={sessionId!}
+            audioStream={streamRef.current}
+            onTranscriptUpdate={(text, isPartial) => {
+              if (isPartial) {
+                setPartialTranscript(text);
+              } else {
+                setTranscript(prev => prev + (prev ? ' ' : '') + text);
+                setPartialTranscript('');
+              }
+            }}
+            onError={(err) => {
+              console.error('Transcription error:', err);
+              setError(`Ошибка транскрипции: ${err}`);
+            }}
+          />
+        </div>
+      )}
+
       <p className="text-xs text-gray-500 mt-4 text-center">
-        Ваш голос записывается и будет проанализирован AI после завершения звонка
+        {transcriptionModel === 'scribe' 
+          ? 'Транскрипция происходит в реальном времени'
+          : 'Ваш голос записывается и будет проанализирован AI после завершения звонка'}
       </p>
     </div>
   );

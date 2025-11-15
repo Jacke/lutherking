@@ -3,11 +3,14 @@ import Link from 'next/link';
 import { usePathname } from 'next/navigation';
 import { CreditsDisplay } from './CreditsDisplay';
 import { LogoutButton } from './LogoutButton';
-import { useSession } from 'next-auth/react';
+// import { useSession } from 'next-auth/react';
+import { MOCK_USER } from '../lib/auth/mock';
 
 export function AppHeader() {
   const pathname = usePathname();
-  const { data: session } = useSession();
+  // MOCK AUTH - Use mock session
+  // const { data: session } = useSession();
+  const session = { user: MOCK_USER };
 
   return (
     <header className="w-full bg-white border-b shadow-sm px-4 py-2 flex items-center justify-between">
