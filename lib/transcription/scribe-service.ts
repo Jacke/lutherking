@@ -15,7 +15,7 @@ interface ScribeWord {
 
 interface ScribeMessage {
   message_type: 'session_started' | 'partial_transcript' | 'committed_transcript' | 'committed_transcript_with_timestamps' | 'error';
-  transcript?: string;
+  text?: string;  // API returns "text" not "transcript"
   words?: ScribeWord[];
   error?: {
     type: string;
@@ -63,8 +63,9 @@ export class ScribeTranscriptionService implements TranscriptionService {
         console.log('[Scribe] Token received:', token.substring(0, 10) + '...');
 
         // Connect to WebSocket
+        // NOTE: For Node.js ws library, use headers (not query parameter!)
         const wsUrl = `wss://api.elevenlabs.io/v1/speech-to-text/realtime?audio_format=pcm_16000`;
-        console.log('[Scribe] Connecting to WebSocket:', wsUrl);
+        console.log('[Scribe] Connecting to WebSocket...');
         const ws = new WebSocket(wsUrl, {
           headers: {
             'xi-api-key': token,
@@ -112,14 +113,16 @@ export class ScribeTranscriptionService implements TranscriptionService {
                 break;
 
               case 'committed_transcript':
-                if (message.transcript) {
-                  fullTranscript += (fullTranscript ? ' ' : '') + message.transcript;
+                // API returns "text" not "transcript"
+                if (message.text) {
+                  fullTranscript += (fullTranscript ? ' ' : '') + message.text;
                 }
                 break;
 
               case 'committed_transcript_with_timestamps':
-                if (message.transcript) {
-                  fullTranscript += (fullTranscript ? ' ' : '') + message.transcript;
+                // API returns "text" not "transcript"
+                if (message.text) {
+                  fullTranscript += (fullTranscript ? ' ' : '') + message.text;
                 }
                 if (message.words) {
                   allWords = allWords.concat(message.words);

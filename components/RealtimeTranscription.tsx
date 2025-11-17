@@ -34,21 +34,12 @@ export default function RealtimeTranscription({
 
     const connect = async () => {
       try {
-        // Get single-use token from server
-        const tokenRes = await fetch('/api/transcription/token', {
-          method: 'POST',
-        });
+        // Connect to our WebSocket proxy server
+        // The server will handle authentication with ElevenLabs securely
+        const protocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
+        const wsUrl = `${protocol}//${window.location.host}/api/transcribe/ws?sessionId=${sessionId}`;
 
-        if (!tokenRes.ok) {
-          throw new Error('Failed to get token');
-        }
-
-        const { token } = await tokenRes.json();
-
-        // Connect to Scribe WebSocket with token in URL
-        // Note: Browser WebSocket doesn't support custom headers
-        // Solution: Pass token as query parameter
-        const wsUrl = `wss://api.elevenlabs.io/v1/speech-to-text/realtime?audio_format=pcm_16000&xi-api-key=${token}`;
+        console.log('[Scribe] Connecting to WebSocket proxy:', wsUrl);
         const ws = new WebSocket(wsUrl);
 
         wsRef.current = ws;
@@ -69,14 +60,16 @@ export default function RealtimeTranscription({
                 break;
 
               case 'partial_transcript':
-                if (message.transcript && mounted) {
-                  onTranscriptUpdate(message.transcript, true);
+                // API returns "text" not "transcript"
+                if (message.text && mounted) {
+                  onTranscriptUpdate(message.text, true);
                 }
                 break;
 
               case 'committed_transcript':
-                if (message.transcript && mounted) {
-                  onTranscriptUpdate(message.transcript, false);
+                // API returns "text" not "transcript"
+                if (message.text && mounted) {
+                  onTranscriptUpdate(message.text, false);
                 }
                 break;
 

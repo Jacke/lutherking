@@ -7,6 +7,7 @@ import { eq } from 'drizzle-orm';
 import { TranscriptionServiceFactory } from '@/lib/transcription';
 import type { TranscriptionModel } from '@/lib/transcription';
 import { getPCMPath, cleanupPCMFile } from '@/lib/audio/converter';
+import { logger, createTimer } from '@/lib/telemetry/logger';
 
 // Initialize OpenAI client for analysis
 const openai = new OpenAI({
@@ -25,14 +26,22 @@ interface EvalResult {
 }
 
 export default async function handler(req: NextApiRequest, res: NextApiResponse) {
+  const timer = createTimer();
+  const transcriptionTimer = createTimer();
+  const analysisTimer = createTimer();
+
   if (req.method !== 'POST') {
     return res.status(405).json({ error: 'Method not allowed' });
   }
 
-  const { sessionId, wavPath } = req.body;
+  const { sessionId, wavPath, realtimeTranscript } = req.body;
 
   if (!sessionId) {
     return res.status(400).json({ error: 'Missing sessionId' });
+  }
+
+  if (realtimeTranscript) {
+    console.log(`[EVAL] Real-time transcript provided (${realtimeTranscript.length} chars) - skipping transcription step`);
   }
 
   try {
@@ -86,9 +95,33 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
     console.log(`[EVAL] Step 2: Starting transcription with ${transcriptionModel}...`);
     let transcriptionResult;
     try {
-      const transcriptionService = TranscriptionServiceFactory.create(transcriptionModel);
-      transcriptionResult = await transcriptionService.transcribe(audioPath);
-      console.log(`[EVAL] Transcription completed. Text length: ${transcriptionResult.text?.length || 0} chars`);
+      // Use real-time transcript if available (Scribe model), otherwise transcribe audio file
+      if (realtimeTranscript) {
+        console.log(`[EVAL] Using real-time transcript from client (${realtimeTranscript.length} chars)`);
+        transcriptionResult = {
+          text: realtimeTranscript,
+          words: [] // Real-time transcript doesn't have word-level timestamps in this implementation
+        };
+      } else {
+        console.log(`[EVAL] Transcribing audio file with ${transcriptionModel}...`);
+        const transcriptionService = TranscriptionServiceFactory.create(transcriptionModel);
+        transcriptionResult = await transcriptionService.transcribe(audioPath);
+        console.log(`[EVAL] Transcription completed. Text length: ${transcriptionResult.text?.length || 0} chars`);
+
+        // Log transcription telemetry
+        await logger.logSystem('transcription', {
+          operation: 'transcription',
+          model: transcriptionModel,
+          fileSize: fs.statSync(audioPath).size,
+          audioFormat: audioPath.endsWith('.webm') ? 'webm' : 'pcm',
+          transcriptLength: transcriptionResult.text?.length || 0,
+        }, {
+          userId: session.userId,
+          sessionId,
+          duration: transcriptionTimer.end(),
+        });
+      }
+
       if (transcriptionResult.text) {
         console.log(`[EVAL] Transcript preview: ${transcriptionResult.text.substring(0, 100)}...`);
       } else {
@@ -103,8 +136,20 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
     console.log(`[EVAL] Step 3: Analyzing transcript with GPT-4...`);
     let analysisResult;
     try {
-      analysisResult = await analyzeTranscript(transcriptionResult.text);
+      analysisResult = await analyzeTranscript(transcriptionResult.text, session.userId, sessionId);
+      const analysisDuration = analysisTimer.end();
       console.log(`[EVAL] Analysis completed. Clarity: ${analysisResult.clarity_score}, Confidence: ${analysisResult.confidence}`);
+
+      // Log GPT analysis telemetry
+      await logger.logExternal('gpt_analysis', {
+        service: 'openai',
+        endpoint: '/v1/chat/completions',
+        model: 'gpt-4-turbo-preview',
+      }, {
+        userId: session.userId,
+        sessionId,
+        duration: analysisDuration,
+      });
     } catch (analysisError) {
       console.error(`[EVAL] ERROR in analysis:`, analysisError);
       throw new Error(`Analysis failed: ${analysisError instanceof Error ? analysisError.message : 'Unknown error'}`);
@@ -148,9 +193,22 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
 
     console.log(`[EVAL] Evaluation completed successfully for session ${sessionId}`);
 
+    // Log success telemetry
+    await logger.logAPI('eval', {
+      method: req.method,
+      path: '/api/eval',
+      statusCode: 200,
+    }, {
+      userId: session.userId,
+      sessionId,
+      duration: timer.end(),
+      ipAddress: req.headers['x-forwarded-for'] as string || req.socket.remoteAddress,
+      userAgent: req.headers['user-agent'],
+    });
+
     // Cleanup temporary PCM file if it was created during transcription
-    // This happens when Scribe model converts WebM -> PCM
-    if (transcriptionModel === 'scribe' && audioPath) {
+    // This happens when Scribe model converts WebM -> PCM (only if we transcribed on server)
+    if (!realtimeTranscript && transcriptionModel === 'scribe' && audioPath) {
       const pcmPath = getPCMPath(audioPath);
       if (pcmPath !== audioPath) {
         // Only cleanup if the PCM path is different (meaning conversion happened)
@@ -163,6 +221,20 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
   } catch (error) {
     console.error(`[EVAL] FATAL ERROR for session ${sessionId}:`, error);
     console.error(`[EVAL] Error stack:`, error instanceof Error ? error.stack : 'No stack trace');
+
+    // Log error telemetry
+    await logger.logAPI('eval', {
+      method: req.method,
+      path: '/api/eval',
+      statusCode: 500,
+    }, {
+      level: 'error',
+      duration: timer.end(),
+      error: error instanceof Error ? error.message : 'Unknown error',
+      errorStack: error instanceof Error ? error.stack : undefined,
+      ipAddress: req.headers['x-forwarded-for'] as string || req.socket.remoteAddress,
+      userAgent: req.headers['user-agent'],
+    });
 
     // Cleanup temporary PCM file even on error
     try {
@@ -190,7 +262,7 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
 /**
  * Analyze transcript with GPT-4
  */
-async function analyzeTranscript(transcript: string): Promise<Omit<EvalResult, 'transcript' | 'duration'>> {
+async function analyzeTranscript(transcript: string, userId?: number, sessionId?: string): Promise<Omit<EvalResult, 'transcript' | 'duration'>> {
   const prompt = `Ты эксперт по анализу публичных выступлений. Проанализируй следующую транскрипцию речи и предоставь детальную обратную связь.
 
 Транскрипция:

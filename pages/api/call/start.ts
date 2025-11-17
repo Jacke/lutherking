@@ -6,8 +6,11 @@ import { db } from '../../../drizzle/db';
 import { users, sessions } from '../../../drizzle/schema';
 import { eq } from 'drizzle-orm';
 import { randomUUID } from 'crypto';
+import { logger, createTimer } from '../../../lib/telemetry/logger';
 
 export default async function handler(req: NextApiRequest, res: NextApiResponse) {
+  const timer = createTimer();
+
   if (req.method !== 'POST') {
     return res.status(405).json({ error: 'Method not allowed' });
   }
@@ -69,12 +72,53 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
 
     console.log(`Call session started: ${sessionId} for user ${user.id}, credits remaining: ${newCredits}`);
 
+    // Log telemetry
+    await logger.logAPI('call_start', {
+      method: req.method,
+      path: '/api/call/start',
+      statusCode: 200,
+      requestBody: { challengeId, transcriptionModel: model },
+    }, {
+      userId: user.id,
+      sessionId,
+      ipAddress: req.headers['x-forwarded-for'] as string || req.socket.remoteAddress,
+      userAgent: req.headers['user-agent'],
+      duration: timer.end(),
+    });
+
+    await logger.logUser('call_start', {
+      event: 'call_start',
+      challengeId,
+      transcriptionModel: model,
+      credits: newCredits,
+    }, {
+      userId: user.id,
+      sessionId,
+      ipAddress: req.headers['x-forwarded-for'] as string || req.socket.remoteAddress,
+      userAgent: req.headers['user-agent'],
+    });
+
     return res.status(200).json({
       sessionId,
       creditsRemaining: newCredits,
     });
   } catch (error) {
     console.error('Start call error:', error);
+
+    // Log error telemetry
+    await logger.logAPI('call_start', {
+      method: req.method,
+      path: '/api/call/start',
+      statusCode: 500,
+    }, {
+      level: 'error',
+      duration: timer.end(),
+      error: error instanceof Error ? error.message : 'Unknown error',
+      errorStack: error instanceof Error ? error.stack : undefined,
+      ipAddress: req.headers['x-forwarded-for'] as string || req.socket.remoteAddress,
+      userAgent: req.headers['user-agent'],
+    });
+
     return res.status(500).json({
       error: 'Failed to start call',
       details: error instanceof Error ? error.message : 'Unknown error',

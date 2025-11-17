@@ -51,4 +51,28 @@ export const callHistory = sqliteTable('call_history', {
   feedback: text('feedback'),
   transcript: text('transcript'), // Full transcription text
   transcriptionModel: text('transcription_model'), // Model used for transcription
+});
+
+export const telemetry = sqliteTable('telemetry', {
+  id: integer('id').primaryKey({ autoIncrement: true }),
+  timestamp: integer('timestamp', { mode: 'timestamp' }).notNull().default(sql`(unixepoch())`),
+  level: text('level').notNull(), // 'info' | 'warn' | 'error'
+  category: text('category').notNull(), // 'api' | 'user' | 'system' | 'external'
+  action: text('action').notNull(),
+
+  // Context
+  userId: integer('user_id').references(() => users.id),
+  sessionId: text('session_id'),
+  ipAddress: text('ip_address'),
+  userAgent: text('user_agent'),
+
+  // Metadata (stored as JSON)
+  metadata: text('metadata'), // JSON string
+
+  // Performance
+  duration: integer('duration'), // milliseconds
+
+  // Error tracking
+  error: text('error'),
+  errorStack: text('error_stack'),
 }); 

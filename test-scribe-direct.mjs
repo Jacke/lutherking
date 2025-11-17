@@ -5,11 +5,23 @@
 import { ScribeTranscriptionService } from './lib/transcription/scribe-service.ts';
 import { convertToPCM } from './lib/audio/converter.ts';
 import fs from 'fs';
+import dotenv from 'dotenv';
+
+// Load environment variables
+dotenv.config();
 
 async function testDirect() {
   console.log('🧪 Testing Scribe Transcription (Direct)...\n');
 
-  const apiKey = 'sk_f7a3ffa83d396015bfda4701e9a057825a5df58218ee2f59';
+  const apiKey = process.env.ELEVENLABS_API_KEY;
+
+  if (!apiKey) {
+    console.error('❌ Error: ELEVENLABS_API_KEY not found in environment variables!');
+    console.log('\n💡 Please set it in your .env file:');
+    console.log('   ELEVENLABS_API_KEY=sk_your_api_key_here\n');
+    process.exit(1);
+  }
+
   const webmFile = './storage/sessions/18c5a86e-8bb9-4fab-a78f-1579807b702c.webm';
 
   try {

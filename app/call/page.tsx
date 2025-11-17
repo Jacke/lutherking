@@ -213,10 +213,15 @@ export default function CallPage() {
       }
 
       // End the call session
+      // For Scribe model, pass the real-time transcript to avoid re-transcription
       const endRes = await fetch('/api/call/end', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ sessionId }),
+        body: JSON.stringify({
+          sessionId,
+          // Only pass transcript if using Scribe (real-time transcription)
+          ...(transcriptionModel === 'scribe' && transcript && { realtimeTranscript: transcript })
+        }),
       });
 
       if (endRes.ok) {

@@ -2,16 +2,23 @@ import type { NextApiRequest, NextApiResponse } from 'next';
 import { db } from '../../../drizzle/db';
 import { sessions } from '../../../drizzle/schema';
 import { eq } from 'drizzle-orm';
+import { logger, createTimer } from '../../../lib/telemetry/logger';
 
 export default async function handler(req: NextApiRequest, res: NextApiResponse) {
+  const timer = createTimer();
+
   if (req.method !== 'POST') {
     return res.status(405).json({ error: 'Method not allowed' });
   }
 
-  const { sessionId } = req.body;
+  const { sessionId, realtimeTranscript } = req.body;
 
   if (!sessionId) {
     return res.status(400).json({ error: 'Missing sessionId' });
+  }
+
+  if (realtimeTranscript) {
+    console.log(`[END] Received real-time transcript (${realtimeTranscript.length} chars) - will skip re-transcription`);
   }
 
   try {
@@ -53,7 +60,9 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
           sessionId,
-          wavPath: session.wavPath
+          wavPath: session.wavPath,
+          // Pass real-time transcript if available (Scribe model)
+          ...(realtimeTranscript && { realtimeTranscript })
         }),
       });
 
@@ -69,6 +78,29 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
       console.log(`[END] Evaluation completed successfully for session ${sessionId}`);
       console.log(`[END] Feedback preview: clarity=${feedback.clarity_score}, confidence=${feedback.confidence}`);
 
+      // Log telemetry
+      await logger.logAPI('call_end', {
+        method: req.method,
+        path: '/api/call/end',
+        statusCode: 200,
+      }, {
+        userId: session.userId,
+        sessionId,
+        ipAddress: req.headers['x-forwarded-for'] as string || req.socket.remoteAddress,
+        userAgent: req.headers['user-agent'],
+        duration: timer.end(),
+      });
+
+      await logger.logUser('call_end', {
+        event: 'call_end',
+        transcriptionModel: session.transcriptionModel || undefined,
+      }, {
+        userId: session.userId,
+        sessionId,
+        ipAddress: req.headers['x-forwarded-for'] as string || req.socket.remoteAddress,
+        userAgent: req.headers['user-agent'],
+      });
+
       return res.status(200).json({
         success: true,
         feedback
@@ -76,6 +108,21 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
     } catch (evalError) {
       console.error(`[END] ERROR calling eval API for session ${sessionId}:`, evalError);
       console.error(`[END] Error details:`, evalError instanceof Error ? evalError.stack : 'No stack trace');
+
+      // Log warning telemetry
+      await logger.logAPI('call_end', {
+        method: req.method,
+        path: '/api/call/end',
+        statusCode: 200,
+      }, {
+        level: 'warn',
+        userId: session.userId,
+        sessionId,
+        ipAddress: req.headers['x-forwarded-for'] as string || req.socket.remoteAddress,
+        userAgent: req.headers['user-agent'],
+        duration: timer.end(),
+        error: 'Evaluation failed but session saved',
+      });
 
       // Return success even if eval fails - user can see session in history
       return res.status(200).json({
@@ -85,6 +132,21 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
     }
   } catch (error) {
     console.error('End call error:', error);
+
+    // Log error telemetry
+    await logger.logAPI('call_end', {
+      method: req.method,
+      path: '/api/call/end',
+      statusCode: 500,
+    }, {
+      level: 'error',
+      duration: timer.end(),
+      error: error instanceof Error ? error.message : 'Unknown error',
+      errorStack: error instanceof Error ? error.stack : undefined,
+      ipAddress: req.headers['x-forwarded-for'] as string || req.socket.remoteAddress,
+      userAgent: req.headers['user-agent'],
+    });
+
     return res.status(500).json({
       error: 'Failed to end call',
       details: error instanceof Error ? error.message : 'Unknown error',
